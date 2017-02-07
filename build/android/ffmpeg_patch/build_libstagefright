@@ -1,0 +1,102 @@
+#!/bin/bash
+
+if [ "$NDK" = "" ]; then
+    echo NDK variable not set, assuming ${HOME}/android-ndk
+    export NDK=${HOME}/android-ndk
+fi
+
+ROOT_DIR=`cd ..; pwd`
+CUR_DIR=`pwd`
+
+echo "Fetching Android system headers"
+if [ ! -d "$ROOT_DIR/android-source/frameworks/base" ]; then
+	git clone https://github.com/CyanogenMod/android_frameworks_base.git "$ROOT_DIR/android-source/frameworks/base"
+fi
+if [ ! -d "$ROOT_DIR/android-source/system/core" ]; then
+	git clone https://github.com/CyanogenMod/android_system_core.git "$ROOT_DIR/android-source/system/core"
+fi
+if [ ! -d "$ROOT_DIR/android-source/frameworks/av" ]; then
+	git clone https://github.com/CyanogenMod/android_frameworks_av.git "$ROOT_DIR/android-source/frameworks/av"
+fi
+if [ ! -d "$ROOT_DIR/android-source/hardware/libhardware" ]; then
+	git clone https://github.com/CyanogenMod/android_hardware_libhardware.git "$ROOT_DIR/android-source/hardware/libhardware"
+fi
+if [ ! -d "$ROOT_DIR/android-source/frameworks/native" ]; then
+	git clone https://github.com/CyanogenMod/android_frameworks_native.git "$ROOT_DIR/android-source/frameworks/native"
+fi
+
+echo "Fetching Android libraries for linking"
+# Libraries from any froyo/gingerbread device/emulator should work
+# fine, since the symbols used should be available on most of them.
+if [ ! -d "$ROOT_DIR/android-libs" ]; then
+    wget http://download.cyanogenmod.org/get/jenkins/65493/cm-10.2.1.3-serranoltexx.zip -P../
+    unzip ../cm-10.2.1.3-serranoltexx.zip system/lib/* -d../
+    mv ../system/lib "$ROOT_DIR/android-libs"
+    rmdir ../system
+    rm ../cm-10.2.1.3-serranoltexx.zip
+fi
+
+ANDROID_SOURCE="$ROOT_DIR/android-source"
+ANDROID_LIBS="$ROOT_DIR/android-libs"
+OBJS="$ROOT_DIR/objs/ffmpeg_stagefright"
+if [ "$DEST" = "" ]; then
+	rm -rf $ROOT_DIR/build/stagefright
+	mkdir -p $ROOT_DIR/build/stagefright
+	DEST=$ROOT_DIR/build/stagefright
+fi
+
+for ABI in "armeabi-v7a" "armeabi" "x86"; do
+	if [ "$ABI" = "x86" ]; then
+		ARCH="x86"
+		TOOLCHAIN=`echo $NDK/toolchains/x86-4.9/prebuilt/*-x86*`
+	else
+		ARCH="arm"
+		TOOLCHAIN=`echo $NDK/toolchains/arm-linux-androideabi-4.9/prebuilt/*-x86*`
+	fi 
+	SYSROOT=$NDK/platforms/android-19/arch-$ARCH
+	# Expand the prebuilt/* path into the correct one
+	export PATH=$TOOLCHAIN/bin:$PATH
+	
+	FLAGS="--target-os=linux --arch=$ARCH"
+	FLAGS="$FLAGS --sysroot=$SYSROOT"
+	FLAGS="$FLAGS --enable-shared --disable-static --disable-doc --disable-ffmpeg --disable-ffplay --disable-ffprobe --disable-ffserver --disable-symver --disable-programs --disable-debug --enable-cross-compile --enable-optimizations --enable-small --enable-pic"
+	if [ "$ARCH" = "arm" ]; then
+		FLAGS="$FLAGS --cross-prefix=$TOOLCHAIN/bin/arm-linux-androideabi- --cpu=armv7-a --enable-libstagefright-h264 --enable-decoder=libstagefright_h26"
+	else
+		FLAGS="$FLAGS --cross-prefix=$TOOLCHAIN/bin/i686-linux-android- --disable-asm"
+	fi
+
+	EXTRA_CFLAGS="-I$DEST/$ABI/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/frameworks/base/include -I$ANDROID_SOURCE/system/core/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/frameworks/native/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/frameworks/native/include/media/openmax"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/frameworks/av/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/frameworks/av/media/libstagefright"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$NDK/sources/cxx-stl/gnu-libstdc++/4.9/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$NDK/sources/cxx-stl/gnu-libstdc++/4.9/libs/$ABI/include "
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ANDROID_SOURCE/hardware/libhardware/include"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -I$SYSROOT/usr/include"
+	if [ "$ARCH" = "arm" ]; then
+		EXTRA_CFLAGS="$EXTRA_CFLAGS -I$NDK/toolchains/arm-linux-androideabi-4.9/prebuilt/*-x86*/lib/gcc/arm-linux-androideabi/4.9/include/"
+	fi
+	if [ "$ARCH" = "arm" ]; then
+		EXTRA_CFLAGS="$EXTRA_CFLAGS -march=armv7-a -mfloat-abi=softfp -mfpu=neon"
+	fi
+	EXTRA_LDFLAGS="-Wl,--fix-cortex-a8 -L$ANDROID_LIBS -Wl,-rpath-link,$ANDROID_LIBS -L$NDK/sources/cxx-stl/gnu-libstdc++/4.9/libs/$ABI"
+	EXTRA_CXXFLAGS="-Wno-multichar -fno-exceptions -fno-rtti -std=c++11"
+	FLAGS="$FLAGS --prefix=$DEST/$ABI"
+
+	mkdir -p $DEST/$ABI
+	mkdir -p $OBJS/$ABI
+
+	echo $FLAGS --extra-cflags="$EXTRA_CFLAGS" --extra-ldflags="$EXTRA_LDFLAGS" --extra-cxxflags="$EXTRA_CXXFLAGS" > $DEST/$ABI/info.txt
+	echo "Configuring ..."
+	cd $OBJS/$ABI
+	$ROOT_DIR/configure $FLAGS --extra-cflags="$EXTRA_CFLAGS" --extra-ldflags="$EXTRA_LDFLAGS" --extra-cxxflags="$EXTRA_CXXFLAGS" | tee $DEST/$ABI/configuration.txt
+	[ $PIPESTATUS == 0 ] || exit 1
+	echo "Making ..."
+	#make clean
+	make -j4 || exit 1
+	make install || exit 1
+	cd $CUR_DIR
+done

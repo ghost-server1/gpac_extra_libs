@@ -1,0 +1,60 @@
+#!/bin/bash
+
+echo -e "\033[32m Note: if you have problem using this script read the README in  trunk/gpac/build/android \033[0m"
+
+if [ -z "$1" ]
+then
+  echo "$1 : You must give as first argument the directory path of the NDK"
+  exit 1
+fi
+
+export PATH="$1:$PATH"
+
+cd `dirname $0`
+
+echo "Compiling FFMPEG for Android..."
+./compile_ffmpeg_android.sh $1 || exit 1
+
+#uncomment these lines if you need support stagefright
+#echo "Compiling FFMPEG support libstagefright for Android..."
+#./compile_ffmpeg_libstagefright_android.sh $1 || exit 1
+
+echo "Making extra_lib dir for android ..."
+cd ../../lib/
+mkdir -p android
+cd android
+LIBPATH=$(pwd)
+
+mkdir -p $LIBPATH/armeabi
+mkdir -p $LIBPATH/armeabi-v7a
+mkdir -p $LIBPATH/x86
+
+cd armeabi/
+rm -f *.so
+cd ../armeabi-v7a
+rm -f *.so
+cd ../x86
+rm -f *.so
+
+cd ../../../build/android/jni
+echo "Building extra libs for GPAC Android..."
+ndk-build 
+if [ $? != 0 ] ; then
+	exit 1
+fi
+
+cd ../libs/
+echo "Copying extra libs for GPAC Android to extra_lib dir ... "
+for i in $(find . -name '*.so')
+do
+	echo -n "$i..."
+	cp "$i" "$LIBPATH/$i" || exit 1
+	echo " done"
+done
+
+
+
+
+
+
+
